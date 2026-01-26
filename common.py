@@ -1,5 +1,6 @@
 import threading
 from multiprocessing import Process
+import time
 
 lock = threading.Lock()
 
@@ -11,6 +12,7 @@ def spawn_prey(shared, lock, n=1):
     for _ in range(n):
         p = Process(target=prey_main, args=(shared, lock, shared_state.prey_pids))
         p.start()
+        time.sleep(1)  
 
 
 def spawn_predator(shared, lock, n=1):
@@ -20,6 +22,7 @@ def spawn_predator(shared, lock, n=1):
     for _ in range(n):
         p = Process(target=predator_main, args=(shared, lock, shared_state.predator_pids))
         p.start()
+        time.sleep(1)  
 
 
 def kill_prey(shared, lock, n=1):

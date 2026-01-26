@@ -10,7 +10,7 @@ from predator import predator_main
 import shared_state
 
 TICK_SECONDS = 1
-GRASS_GROWTH = 20
+GRASS_GROWTH = 15
 
 def socket_server(shared, lock):
     HOST = "127.0.0.1"
@@ -22,7 +22,7 @@ def socket_server(shared, lock):
 
     print(f"[ENV] socket listening on {HOST}:{PORT}")
 
-    while True:
+    while shared.get("running", True):
         conn, addr = s.accept()
         data = conn.recv(1024).decode()
 
@@ -47,20 +47,19 @@ def socket_server(shared, lock):
         conn.close()
 
 def main(q_env_to_display=None, q_display_to_env=None):
-    # Initialize the manager and get shared resources
-    shared, lock, prey_pids, predator_pids = shared_state.init_manager()
-    
-    # Update the module-level variables
+    shared, lock, prey_pids, predator_pids, hunted_prey = shared_state.init_manager()
+
     shared_state.shared = shared
     shared_state.lock = lock
     shared_state.prey_pids = prey_pids
     shared_state.predator_pids = predator_pids
+    shared_state.hunted_prey = hunted_prey
     
     with lock:
         shared["prey_count"] = 0
         shared["predator_count"] = 0
         shared["drought"] = False
-        shared["grass"] = 0
+        shared["grass"] = 200
         shared["running"] = True
         shared["paused"] = False
 
@@ -89,12 +88,11 @@ def main(q_env_to_display=None, q_display_to_env=None):
     time.sleep(2)
 
     step = 0
-    shared["grass"] = 200
     # initialise quelques proies et predateurs
-    spawn_prey(shared, lock, n=1)
+    spawn_prey(shared, lock, n=5)
     time.sleep(1)
     
-    spawn_predator(shared, lock, n=0)
+    spawn_predator(shared, lock, n=3)
     time.sleep(1)
 
     
@@ -147,6 +145,7 @@ def main(q_env_to_display=None, q_display_to_env=None):
                         kill_prey(shared, lock, 1)
 
                 # Spawn new predators occasionally if population is low
+                hunted = list(shared_state.hunted_prey)
                 if step % 5 == 0:
                     with lock:
                         if shared["predator_count"] < 10 and shared["prey_count"] > 10:
@@ -157,6 +156,13 @@ def main(q_env_to_display=None, q_display_to_env=None):
                 preys = shared["prey_count"]
                 drought = shared["drought"]
                 predators = shared["predator_count"]
+                
+            # Check for extinction
+            if preys <= 0 and predators <= 0:
+                print("\n[ENV] Both populations extinct - simulation ending")
+                with lock:
+                    shared["running"] = False
+                break
 
             if q_env_to_display is not None:
                 q_env_to_display.put({
@@ -177,6 +183,15 @@ def main(q_env_to_display=None, q_display_to_env=None):
         print("\n[ENV] stop")
         with lock:
             shared["running"] = False
+            
+    finally:
+        print("[ENV] Cleaning up...")
+        with lock:
+            shared["running"] = False
+        socket_proc.join(timeout=2)
+        if socket_proc.is_alive():
+            socket_proc.terminate()
+        print("[ENV] Shutdown complete")
 
 if __name__ == "__main__":
     main()
