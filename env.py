@@ -4,12 +4,13 @@ import os
 import signal
 import time
 from multiprocessing import Manager, Lock, Process
-from common import spawn_prey, kill_prey, consume_grass
-
-
+from common import spawn_prey, kill_prey, consume_grass, spawn_predator, kill_predator
+from prey import prey_main
+from predator import predator_main
+import shared_state
 
 TICK_SECONDS = 1
-GRASS_GROWTH = 5
+GRASS_GROWTH = 20
 
 def socket_server(shared, lock):
     HOST = "127.0.0.1"
@@ -45,15 +46,24 @@ def socket_server(shared, lock):
 
         conn.close()
 
-def main(q_env_to_display, q_display_to_env):
-    manager = Manager()
-    lock = Lock()
-    shared = manager.dict()
+def main(q_env_to_display=None, q_display_to_env=None):
+    # Initialize the manager and get shared resources
+    shared, lock, prey_pids, predator_pids = shared_state.init_manager()
+    
+    # Update the module-level variables
+    shared_state.shared = shared
+    shared_state.lock = lock
+    shared_state.prey_pids = prey_pids
+    shared_state.predator_pids = predator_pids
+    
     with lock:
+        shared["prey_count"] = 0
         shared["predator_count"] = 0
-
-    with lock:
         shared["drought"] = False
+        shared["grass"] = 0
+        shared["running"] = True
+        shared["paused"] = False
+
     DROUGHT_DURATION = 8
     drought_end_time = 0.0
 
@@ -63,16 +73,10 @@ def main(q_env_to_display, q_display_to_env):
         drought_end_time = now + DROUGHT_DURATION
         with lock:
             shared["drought"] = True
-        print(f"\n[ENV] Sécheresse déclenchée pour {DROUGHT_DURATION} secondes (PID: {os.getpid()})")
+        print(f"\n[ENV] Secheresse declenchee pour {DROUGHT_DURATION} secondes (PID: {os.getpid()})")
+    
     signal.signal(signal.SIGUSR1, drought_handler)
-    print(f"[ENV] prêt. PID: {os.getpid()} (envoie SIGUSR1 pour sécheresse)")
-
-    shared["grass"] = 0
-    shared["running"] = True
-    shared["prey_count"] = 20
-    shared["predator_count"] = 5
-    with lock:
-        shared["paused"] = False
+    print(f"[ENV] pret. PID: {os.getpid()} (envoie SIGUSR1 pour secheresse)")
 
     socket_proc = Process(
         target=socket_server,
@@ -80,33 +84,49 @@ def main(q_env_to_display, q_display_to_env):
     )
     socket_proc.daemon = True
     socket_proc.start()
+    
+    # temps pour initialiser le socket server
+    time.sleep(2)
 
     step = 0
+    shared["grass"] = 200
+    # initialise quelques proies et predateurs
+    spawn_prey(shared, lock, n=1)
+    time.sleep(1)
+    
+    spawn_predator(shared, lock, n=0)
+    time.sleep(1)
+
+    
     try:
         while True:
             step += 1
             now = time.time()
+            
             # Lire commandes display -> env (non bloquant)
-            while not q_display_to_env.empty():
-                cmd = q_display_to_env.get()
-                if cmd.get("type") == "pause":
-                    with lock:
-                        shared["paused"] = True
-                elif cmd.get("type") == "resume":
-                    with lock:
-                        shared["paused"] = False
-                elif cmd.get("type") == "stop":
-                    with lock:
-                        shared["running"] = False
+            if q_display_to_env is not None:
+                while not q_display_to_env.empty():
+                    cmd = q_display_to_env.get()
+                    if cmd.get("type") == "pause":
+                        with lock:
+                            shared["paused"] = True
+                    elif cmd.get("type") == "resume":
+                        with lock:
+                            shared["paused"] = False
+                    elif cmd.get("type") == "stop":
+                        with lock:
+                            shared["running"] = False
+            
             with lock:
                 paused = shared["paused"]
+            
             if not paused:
-                 # fin de sécheresse ?
+                # fin de secheresse ?
                 if now >= drought_end_time:
                     with lock:
                         shared["drought"] = False
 
-                # herbe pousse seulement si pas sécheresse
+                # herbe pousse seulement si pas secheresse
                 with lock:
                     drought = shared["drought"]
 
@@ -114,36 +134,49 @@ def main(q_env_to_display, q_display_to_env):
                     with lock:
                         shared["grass"] += GRASS_GROWTH
 
-                if step % 3 == 0:
-                    spawn_prey(shared, lock ,1)
+                # if step % 3 == 0:
+                #     with lock:
+                #         if shared["prey_count"] < 30:
+                #             spawn_prey(shared, lock, n=1)
 
+                # Kill excess prey if resources are scarce
+                with lock:
+                    grass_amt = shared["grass"]
+                    prey_amt = shared["prey_count"]
+                    if grass_amt < 20 and prey_amt > 20:
+                        kill_prey(shared, lock, 1)
 
+                # Spawn new predators occasionally if population is low
+                if step % 5 == 0:
+                    with lock:
+                        if shared["predator_count"] < 10 and shared["prey_count"] > 10:
+                            spawn_predator(shared, lock, n=1)
 
-                if shared["grass"] < 20:
-                    kill_prey(shared, lock ,1)
-                pass
             with lock:
                 grass = shared["grass"]
                 preys = shared["prey_count"]
                 drought = shared["drought"]
                 predators = shared["predator_count"]
 
-            q_env_to_display.put({
-                "type": "status",
-                "step": step,
-                "grass": grass,
-                "preys": preys,
-                "predators": predators,
-                "drought": drought,
-                "paused": paused,
-            })
-
-
+            if q_env_to_display is not None:
+                q_env_to_display.put({
+                    "type": "status",
+                    "step": step,
+                    "grass": grass,
+                    "preys": preys,
+                    "predators": predators,
+                    "drought": drought,
+                    "paused": paused,
+                })
+            
+            # Print status to console
+            print(f"[ENV] Step {step}: Grass={grass}, Prey={preys}, Predators={predators}, Drought={drought}")
 
             time.sleep(TICK_SECONDS)
     except KeyboardInterrupt:
-        print("\n[ENV] stop", 1)
-        shared["running"] = False
+        print("\n[ENV] stop")
+        with lock:
+            shared["running"] = False
 
 if __name__ == "__main__":
     main()

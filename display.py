@@ -12,7 +12,7 @@ def main(q_env_to_display, q_display_to_env):
                         f"[DISPLAY] step={msg['step']} | grass={msg['grass']} | "
                         f"preys={msg['preys']} | predators={msg['predators']} | drought={msg['drought']} | paused={msg['paused']}"
                     )
-            time.sleep(1)
+            time.sleep(3)
     except KeyboardInterrupt:
         print("\n[DISPLAY] arrêt demandé")
         # Optionnel: demander à env de s'arrêter
