@@ -2,9 +2,6 @@ import threading
 from multiprocessing import Process
 import time
 
-lock = threading.Lock()
-
-
 def spawn_prey(shared, lock, n=1):
     from prey import prey_main
     import shared_state
